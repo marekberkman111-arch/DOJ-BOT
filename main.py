@@ -6,6 +6,7 @@ from dotenv import load_dotenv
 from config import GUILD_ID
 from database import initialize, connect, now, audit
 from structure import install
+from legislation import ARTICLES, get_article
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -84,6 +85,8 @@ async def case_lookup(interaction: discord.Interaction, cislo: str):
         case_id = int(cislo.upper().replace("SA-", ""))
     except ValueError:
         return await interaction.response.send_message("Neplatné číslo spisu.", ephemeral=True)
+    if not staff(interaction.user):
+        return await interaction.response.send_message("Nemáš oprávnění nahlížet do soudních spisů.", ephemeral=True)
     with connect() as db:
         row = db.execute("SELECT * FROM cases WHERE id=?", (case_id,)).fetchone()
     if row is None:
@@ -112,6 +115,94 @@ async def decree(interaction: discord.Interaction, nazev: str, obsah: str):
     if channel:
         await channel.send(embed=embed)
     await interaction.response.send_message(f"Návrh SD-{doc_id:05d} uložen." + ("" if channel else " Kanál návrhy-vyhlášek zatím neexistuje."), ephemeral=True)
+
+
+@bot.tree.command(name="paragraf", description="Vyhledá paragraf RP zákoníku San Andreas", guild=GUILD)
+@app_commands.describe(cislo="Například 101 nebo § 201")
+async def article(interaction: discord.Interaction, cislo: str):
+    number = cislo.strip().removeprefix("§").strip()
+    found = get_article(number)
+    if not found:
+        return await interaction.response.send_message("Paragraf nenalezen.", ephemeral=True)
+    title, body = found
+    embed = discord.Embed(title=f"§ {number} – {title}", description=body, color=0x243b53)
+    embed.set_footer(text="NÁVRH RP zákoníku – schválení vedením serveru teprve proběhne")
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="zakonik", description="Zobrazí přehled RP paragrafů", guild=GUILD)
+async def penal_index(interaction: discord.Interaction):
+    text = "\\n".join(f"**§ {key}** – {value[0]}" for key, value in ARTICLES.items())
+    await interaction.response.send_message(embed=discord.Embed(title="📚 Návrh trestního a soudního řádu", description=text.replace("\\n", "\n")), ephemeral=True)
+
+@bot.tree.command(name="zmenit_jednani", description="Změní termín jednání a zveřejní aktualizaci", guild=GUILD)
+@app_commands.describe(cislo="SA-00001", termin="Nový termín, např. 2026-11-02 18:00")
+async def reschedule(interaction: discord.Interaction, cislo: str, termin: str):
+    if not judge(interaction.user):
+        return await interaction.response.send_message("Pouze soudce.", ephemeral=True)
+    try:
+        case_id = int(cislo.upper().replace("SA-", ""))
+    except ValueError:
+        return await interaction.response.send_message("Neplatné číslo spisu.", ephemeral=True)
+    with connect() as db:
+        row = db.execute("SELECT title FROM cases WHERE id=?", (case_id,)).fetchone()
+        if row is None:
+            return await interaction.response.send_message("Případ nenalezen.", ephemeral=True)
+        db.execute("UPDATE cases SET hearing_at=? WHERE id=?", (termin, case_id))
+        audit(db, interaction.user.id, "HEARING_RESCHEDULED", str(case_id))
+    channel = find_channel(interaction.guild, "soudní-jednání")
+    if channel:
+        embed = discord.Embed(title=f"📅 ZMĚNA TERMÍNU SA-{case_id:05d}", description=row["title"], color=0xd97706)
+        embed.add_field(name="Nový termín", value=termin)
+        await channel.send(embed=embed)
+    await interaction.response.send_message("Termín byl aktualizován." + ("" if channel else " Kanál soudní-jednání nebyl nalezen."), ephemeral=True)
+
+@bot.tree.command(name="rozsudek", description="Uzavře soudní případ a zveřejní rozsudek", guild=GUILD)
+@app_commands.describe(cislo="SA-00001", rozhodnuti="Výrok soudu", oduvodneni="Stručné odůvodnění")
+async def verdict(interaction: discord.Interaction, cislo: str, rozhodnuti: str, oduvodneni: str):
+    if not judge(interaction.user):
+        return await interaction.response.send_message("Pouze soudce.", ephemeral=True)
+    try:
+        case_id = int(cislo.upper().replace("SA-", ""))
+    except ValueError:
+        return await interaction.response.send_message("Neplatné číslo spisu.", ephemeral=True)
+    with connect() as db:
+        row = db.execute("SELECT title,status FROM cases WHERE id=?", (case_id,)).fetchone()
+        if row is None:
+            return await interaction.response.send_message("Případ nenalezen.", ephemeral=True)
+        if row["status"] != "OTEVRENY":
+            return await interaction.response.send_message("Případ už je uzavřen.", ephemeral=True)
+        db.execute("UPDATE cases SET status='UZAVRENY' WHERE id=?", (case_id,))
+        audit(db, interaction.user.id, "VERDICT_ISSUED", str(case_id))
+    embed = discord.Embed(title=f"⚖️ Rozsudek SA-{case_id:05d}", description=row["title"])
+    embed.add_field(name="Výrok", value=rozhodnuti[:1024], inline=False)
+    embed.add_field(name="Odůvodnění", value=oduvodneni[:1024], inline=False)
+    embed.set_footer(text=f"Soudce: {interaction.user.display_name} • RP dokument")
+    channel = find_channel(interaction.guild, "soudní-rozsudky")
+    if channel:
+        await channel.send(embed=embed)
+    await interaction.response.send_message("Rozsudek uložen." + ("" if channel else " Kanál soudní-rozsudky nebyl nalezen."), ephemeral=True)
+
+@bot.tree.command(name="schvalit_vyhlasku", description="Guvernér schválí návrh vyhlášky", guild=GUILD)
+@app_commands.describe(cislo="Číslo návrhu, například SD-00001")
+async def approve_decree(interaction: discord.Interaction, cislo: str):
+    if not interaction.user.guild_permissions.administrator and not any(r.name == "Governor" for r in interaction.user.roles):
+        return await interaction.response.send_message("Schválení je vyhrazeno guvernérovi.", ephemeral=True)
+    try:
+        doc_id = int(cislo.upper().replace("SD-", ""))
+    except ValueError:
+        return await interaction.response.send_message("Neplatné číslo dokumentu.", ephemeral=True)
+    with connect() as db:
+        row = db.execute("SELECT * FROM government_documents WHERE id=? AND kind='VYHLASKA'", (doc_id,)).fetchone()
+        if row is None or row["status"] != "NAVRH":
+            return await interaction.response.send_message("Návrh neexistuje nebo už byl vyřízen.", ephemeral=True)
+        db.execute("UPDATE government_documents SET status='SCHVALENO' WHERE id=?", (doc_id,))
+        audit(db, interaction.user.id, "DECREE_APPROVED", str(doc_id))
+    embed = discord.Embed(title=f"📜 STÁTNÍ VYHLÁŠKA SD-{doc_id:05d}: {row['title']}", description=row["body"], color=0x176b4d)
+    embed.set_footer(text=f"Schválil/a: {interaction.user.display_name} • RP Government of San Andreas")
+    channel = find_channel(interaction.guild, "státní-vyhlášky")
+    if channel:
+        await channel.send(embed=embed)
+    await interaction.response.send_message("Vyhláška schválena." + ("" if channel else " Kanál státní-vyhlášky nebyl nalezen."), ephemeral=True)
 
 @bot.event
 async def on_ready():
