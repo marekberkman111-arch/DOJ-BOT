@@ -28,3 +28,15 @@ vyhledání spisu a návrh státní vyhlášky jako Discord embed.
 - Původní SW/AW grafické předlohy zatím nejsou integrovány.
 - RP legislativa, odvolání, rozsudky, změny termínů a auditní UI jsou plánované.
 - Dokumenty a ustanovení mají pouze RP účel.
+
+## Druhá etapa – nové příkazy
+- `/paragraf` – zobrazení ustanovení RP zákoníku
+- `/zakonik` – přehled návrhu paragrafů
+- `/zmenit_jednani` – změna termínu s novým oznámením
+- `/rozsudek` – zveřejnění rozsudku jako Discord embed
+- `/schvalit_vyhlasku` – guvernér schválí návrh, výsledek je Discord embed
+
+Zákoník je **neodsouhlasený RP návrh** s orientačními herními sankcemi.
+Soudní spisy mohou vyhledávat pouze oprávněné role.
+Zatím nejsou implementovány: editace starých oznámení, soudní odvolání, úplné schvalovací workflow,
+produkční PostgreSQL, SW/AW PDF a integrační testy.
