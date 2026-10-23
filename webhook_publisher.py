@@ -24,7 +24,8 @@ async def publish(channel: discord.TextChannel, embed: discord.Embed):
     if url:
         async with __import__("aiohttp").ClientSession() as session:
             hook = discord.Webhook.from_url(url, session=session)
-            if hook.channel_id != channel.id:
+            details = await hook.fetch()
+            if details.channel_id != channel.id:
                 raise ValueError("Webhook nepatří do požadovaného kanálu.")
             return await hook.send(embed=embed, username="San Andreas DOJ", wait=True,
                                    allowed_mentions=discord.AllowedMentions.none())
