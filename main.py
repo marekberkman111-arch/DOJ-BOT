@@ -7,6 +7,8 @@ from config import GUILD_ID
 from database import initialize, connect, now, audit
 from structure import install
 from legislation import ARTICLES, get_article
+from legal_registry import CODES, get_code
+from webhook_publisher import publish
 
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
@@ -52,12 +54,12 @@ class CaseModal(discord.ui.Modal, title="Nový soudní případ"):
         cases = find_channel(interaction.guild, "soudní-případy")
         hearings = find_channel(interaction.guild, "soudní-jednání")
         if cases:
-            await cases.send(embed=embed)
+            await publish(cases, embed)
         if str(self.termin) and hearings:
             schedule = discord.Embed(title=f"📅 Soudní jednání {number}", description=str(self.nazev))
             schedule.add_field(name="Termín", value=str(self.termin))
             schedule.add_field(name="Místo", value="Superior Court of San Andreas")
-            await hearings.send(embed=schedule)
+            await publish(hearings, schedule)
         await interaction.response.send_message(f"Případ **{number}** byl založen." + ("" if cases else " Kanál soudní-případy zatím neexistuje."), ephemeral=True)
 
 @bot.tree.command(name="instalovat_server", description="Vytvoří chybějící kategorie, kanály a role", guild=GUILD)
@@ -113,7 +115,7 @@ async def decree(interaction: discord.Interaction, nazev: str, obsah: str):
     embed.set_footer(text="NÁVRH – není účinnou vyhláškou")
     channel = find_channel(interaction.guild, "návrhy-vyhlášek")
     if channel:
-        await channel.send(embed=embed)
+        await publish(channel, embed)
     await interaction.response.send_message(f"Návrh SD-{doc_id:05d} uložen." + ("" if channel else " Kanál návrhy-vyhlášek zatím neexistuje."), ephemeral=True)
 
 
@@ -203,6 +205,41 @@ async def approve_decree(interaction: discord.Interaction, cislo: str):
     if channel:
         await channel.send(embed=embed)
     await interaction.response.send_message("Vyhláška schválena." + ("" if channel else " Kanál státní-vyhlášky nebyl nalezen."), ephemeral=True)
+
+
+@bot.tree.command(name="pravni_predpis", description="Zobrazí strukturu RP právního předpisu", guild=GUILD)
+@app_commands.describe(kod="Například TZ, TR, SR, DP nebo UST")
+async def legal_code(interaction: discord.Interaction, kod: str):
+    item = get_code(kod)
+    if item is None:
+        return await interaction.response.send_message(
+            "Neznámý kód. Dostupné: " + ", ".join(c.code for c in CODES), ephemeral=True)
+    embed = discord.Embed(title=f"📚 {item.code} – {item.title}",
+                          description="\\n".join(f"• {section}" for section in item.sections).replace("\\n", "\n"),
+                          color=0x334e68)
+    embed.add_field(name="Inspirace", value=item.inspiration, inline=False)
+    embed.add_field(name="Publikační kanál", value=f"#{item.channel}", inline=False)
+    embed.set_footer(text="NÁVRH RP legislativy • není účinným zákonem")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="publikovat_zakonik", description="Publikuje návrhový index RP předpisů", guild=GUILD)
+@app_commands.default_permissions(administrator=True)
+async def publish_codes(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        return await interaction.response.send_message("Pouze administrátor.", ephemeral=True)
+    channel = find_channel(interaction.guild, "státní-zákony")
+    if channel is None:
+        return await interaction.response.send_message("Nejdřív vytvoř kanál státní-zákony.", ephemeral=True)
+    embed = discord.Embed(title="🏛️ NÁVRH – Registr právních předpisů San Andreas",
+        description="\\n".join(f"**{item.code}** – {item.title}" for item in CODES).replace("\\n", "\n"),
+        color=0xb8860b)
+    embed.set_footer(text="NÁVRH • není schválená ani účinná legislativa")
+    await interaction.response.defer(ephemeral=True)
+    try:
+        await publish(channel, embed)
+    except Exception as exc:
+        return await interaction.followup.send(f"Publikování selhalo: {type(exc).__name__}. Zkontroluj webhook a oprávnění.")
+    await interaction.followup.send("Návrhový index byl publikován jako Discord zpráva.")
 
 @bot.event
 async def on_ready():
